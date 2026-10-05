@@ -1,6 +1,7 @@
 package com.nse.testtcpclient.marketdata;
 
-import com.nse.testtcpclient.marketdata.MarketDataProperties.SyncMode;
+import com.nse.testtcpclient.config.MitchProperties;
+import com.nse.testtcpclient.config.MitchProperties.SyncMode;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.AddOrder;
 import org.junit.jupiter.api.AfterEach;
@@ -148,11 +149,25 @@ class MarketDataClientTest {
     }
 
     private MarketDataClient client(SyncMode mode, int maxAttempts) {
-        MarketDataProperties properties = new MarketDataProperties(true, "127.0.0.1", server.port(), "MDUKCB", "mit123",
-                Duration.ofSeconds(2), Duration.ZERO, Duration.ofSeconds(2), Duration.ofSeconds(2),
-                Duration.ofSeconds(2), maxAttempts, Duration.ofMillis(10), false, mode,
-                new MarketDataProperties.Replay(9, 2, (byte) 4),
-                new MarketDataProperties.Snapshot(5001, 0, (byte) 4, (byte) 1));
+        MitchProperties properties = new MitchProperties();
+        properties.setHost("127.0.0.1");
+        properties.setPort(server.port());
+        properties.setSnapshotPort(server.port());
+        properties.setUsername("MDUKCB");
+        properties.setPassword("mit123");
+        properties.setMarketDataGroup((byte) 4);
+        properties.setSocketTimeoutMs(0);
+        properties.setConnectTimeout(Duration.ofSeconds(2));
+        properties.setLoginTimeout(Duration.ofSeconds(2));
+        properties.setAcceptTimeout(Duration.ofSeconds(2));
+        properties.setCompletionTimeout(Duration.ofSeconds(2));
+        properties.setMaxConnectAttempts(maxAttempts);
+        properties.setRetryBackoff(Duration.ofMillis(10));
+        properties.setSyncMode(mode);
+        properties.getReplay().setStartSequence(9);
+        properties.getReplay().setCount(2);
+        properties.getSnapshot().setRequestId(5001);
+        properties.afterPropertiesSet();
         return new MarketDataClient(properties, events::add);
     }
 }

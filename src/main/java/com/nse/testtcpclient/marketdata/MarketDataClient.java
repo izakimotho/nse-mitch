@@ -1,5 +1,6 @@
 package com.nse.testtcpclient.marketdata;
 
+import com.nse.testtcpclient.config.MitchProperties;
 import com.nse.testtcpclient.marketdata.protocol.FrameReader;
 import com.nse.testtcpclient.marketdata.protocol.MitchDecoder;
 import com.nse.testtcpclient.marketdata.protocol.MitchEncoder;
@@ -51,7 +52,7 @@ public class MarketDataClient {
     private static final Logger log = LoggerFactory.getLogger(MarketDataClient.class);
     private static final HexFormat HEX = HexFormat.of();
 
-    private final MarketDataProperties properties;
+    private final MitchProperties properties;
     private final ApplicationEventPublisher publisher;
     private final MitchDecoder decoder;
     private final Map<Long, String> instrumentCache = new ConcurrentHashMap<>();
@@ -62,18 +63,18 @@ public class MarketDataClient {
     private volatile Session session;
     private volatile CompletableFuture<Void> synchronization = new CompletableFuture<>();
 
-    public MarketDataClient(MarketDataProperties properties, ApplicationEventPublisher publisher) {
+    public MarketDataClient(MitchProperties properties, ApplicationEventPublisher publisher) {
         this.properties = properties;
         this.publisher = publisher;
-        this.decoder = new MitchDecoder(properties.innerLengthIncludesLengthField());
+        this.decoder = new MitchDecoder(properties.isInnerLengthIncludesLengthField());
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
-        if (properties.enabled()) {
+        if (properties.isEnabled()) {
             start();
         } else {
-            log.info("Market data client disabled (marketdata.enabled=false)");
+            log.info("Market data client disabled (nse.mitch.replay.enabled=false)");
         }
     }
 
@@ -131,7 +132,7 @@ public class MarketDataClient {
     }
 
     private void runWithRetries() {
-        int maxAttempts = properties.maxConnectAttempts();
+        int maxAttempts = properties.getMaxConnectAttempts();
         for (int attempt = 1; running; attempt++) {
             try (Session current = new Session()) {
                 session = current;
@@ -155,11 +156,11 @@ public class MarketDataClient {
                     return;
                 }
                 log.warn("Market data attempt {}/{} failed: {}. Retrying in {}",
-                        attempt, maxAttempts, e.toString(), properties.retryBackoff());
+                        attempt, maxAttempts, e.toString(), properties.getRetryBackoff());
             } finally {
                 session = null;
             }
-            if (!sleep(properties.retryBackoff())) {
+            if (!sleep(properties.getRetryBackoff())) {
                 return;
             }
         }
@@ -197,31 +198,31 @@ public class MarketDataClient {
 
         void synchronize() throws IOException, InterruptedException, TimeoutException {
             connect();
-            send(MitchEncoder.loginRequest(properties.username(), properties.password()), true);
-            LoginResponse login = await(loginResponse, properties.loginTimeout(), "login response");
+            send(MitchEncoder.loginRequest(properties.getUsername(), properties.getPassword()), true);
+            LoginResponse login = await(loginResponse, properties.getLoginTimeout(), "login response");
             if (!login.accepted()) {
                 throw new MarketDataException("Login rejected: %s (status 0x%02X)"
                         .formatted(login.describe(), login.status()));
             }
-            log.info("Logged in as [{}]: {}", properties.username(), login.describe());
+            log.info("Logged in as [{}]: {}", properties.getUsername(), login.describe());
 
-            switch (properties.syncMode()) {
+            switch (properties.getSyncMode()) {
                 case REPLAY -> {
-                    MarketDataProperties.Replay replay = properties.replay();
+                    MitchProperties.Replay replay = properties.getReplay();
                     log.info("Requesting replay | start seq: {}, count: {}, group: {}",
-                            replay.startSequence(), replay.count(), replay.marketDataGroup());
-                    send(MitchEncoder.replayRequest(replay.startSequence(), replay.count(), replay.marketDataGroup()),
-                            false);
-                    await(replayAccepted, properties.acceptTimeout(), "replay acceptance");
+                            replay.getStartSequence(), replay.getCount(), properties.getMarketDataGroup());
+                    send(MitchEncoder.replayRequest(replay.getStartSequence(), replay.getCount(),
+                            properties.getMarketDataGroup()), false);
+                    await(replayAccepted, properties.getAcceptTimeout(), "replay acceptance");
                     awaitCompletion();
                 }
                 case SNAPSHOT -> {
-                    MarketDataProperties.Snapshot snapshot = properties.snapshot();
+                    MitchProperties.Snapshot snapshot = properties.getSnapshot();
                     log.info("Requesting snapshot | request id: {}, instrument: {}, group: {}, type: {}",
-                            snapshot.requestId(), snapshot.instrumentId(), snapshot.marketDataGroup(),
-                            snapshot.snapshotType());
-                    send(MitchEncoder.snapshotRequest(snapshot.requestId(), snapshot.instrumentId(),
-                            snapshot.marketDataGroup(), snapshot.snapshotType()), false);
+                            snapshot.getRequestId(), snapshot.getInstrumentId(), properties.getMarketDataGroup(),
+                            snapshot.getSnapshotType());
+                    send(MitchEncoder.snapshotRequest(snapshot.getRequestId(), snapshot.getInstrumentId(),
+                            properties.getMarketDataGroup(), snapshot.getSnapshotType()), false);
                     awaitCompletion();
                 }
                 case NONE -> log.info("Sync mode NONE: skipping replay/snapshot");
@@ -245,19 +246,19 @@ public class MarketDataClient {
         private void connect() throws IOException {
             socket.setKeepAlive(true);
             socket.setTcpNoDelay(true);
-            socket.connect(new InetSocketAddress(properties.host(), properties.port()),
-                    toMillis(properties.connectTimeout()));
-            socket.setSoTimeout(toMillis(properties.readTimeout()));
+            socket.connect(new InetSocketAddress(properties.getHost(), properties.connectPort()),
+                    toMillis(properties.getConnectTimeout()));
+            socket.setSoTimeout(properties.getSocketTimeoutMs());
             out = new BufferedOutputStream(socket.getOutputStream());
             FrameReader reader = new FrameReader(new BufferedInputStream(socket.getInputStream()));
             Thread.ofVirtual().name("market-data-listener").start(() -> listen(reader));
-            log.info("Connected to {}:{}", properties.host(), properties.port());
+            log.info("Connected to {}:{}", properties.getHost(), properties.connectPort());
         }
 
         private void awaitCompletion() throws IOException, InterruptedException {
             log.info("Waiting for stream completion marker...");
             try {
-                await(streamCompleted, properties.completionTimeout(), "stream completion marker");
+                await(streamCompleted, properties.getCompletionTimeout(), "stream completion marker");
             } catch (TimeoutException e) {
                 log.warn("{}; continuing without it", e.getMessage());
             }
