@@ -1,19 +1,22 @@
 package com.nse.testtcpclient.marketdata;
 
 import com.nse.testtcpclient.config.MitchProperties;
-import com.nse.testtcpclient.config.MitchProperties.SyncMode;
-import com.nse.testtcpclient.marketdata.protocol.MitchMessage;
+import com.nse.testtcpclient.marketdata.MarketDataRequestResult.Status;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.AddOrder;
+import com.nse.testtcpclient.marketdata.request.ReplayRequestDto;
+import com.nse.testtcpclient.marketdata.request.SnapshotRequestDto;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static com.nse.testtcpclient.marketdata.protocol.TestFrames.*;
@@ -23,24 +26,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class MarketDataClientTest {
 
     private static final HexFormat HEX = HexFormat.of();
+    private static final String LOGIN_HEX = "1b000101010000001300014d44554b43426d697431323320202020";
+    private static final String REPLAY_HEX = "16000101090000000e00030900000002000000000004";
+    private static final ReplayRequestDto REPLAY = new ReplayRequestDto(2, (byte) 4, 9, 305);
 
     private final List<Object> events = new CopyOnWriteArrayList<>();
+    private final List<FakeMitchServer> servers = new ArrayList<>();
     private MarketDataClient client;
-    private FakeMitchServer server;
 
     @AfterEach
-    void tearDown() throws Exception {
+    void tearDown() throws IOException {
         if (client != null) {
             client.stop();
         }
-        if (server != null) {
+        for (FakeMitchServer server : servers) {
             server.close();
         }
     }
 
     @Test
-    void replaySynchronizesCachesSymbolsAndPublishesEvents() throws Exception {
-        server = new FakeMitchServer(c -> {
+    void replaySendsRequestParametersAndPublishesTaggedEvents() throws Exception {
+        FakeMitchServer server = server(c -> {
             c.read();
             c.write(loginResponse('A'));
             c.read();
@@ -48,73 +54,93 @@ class MarketDataClientTest {
                     data(symbolDirectory(7, "SCOM"), historicalSymbol("KCB"), addOrder(123L, 7, 'B', 500, 152_500)),
                     replayResponse('C'));
         });
-        client = client(SyncMode.REPLAY, 1);
+        client = client(properties(server.port(), 1, 1));
 
-        client.start();
-        client.synchronization().get(5, TimeUnit.SECONDS);
+        MarketDataRequestResult result = client.replay(REPLAY);
 
-        assertThat(server.received).extracting(HEX::formatHex).containsExactly(
-                "1b000101010000001300014d44554b43426d697431323320202020",
-                "16000101090000000e00030900000002000000000004");
+        assertThat(result).isEqualTo(new MarketDataRequestResult(RequestType.REPLAY, 305, Status.COMPLETED, 3, null));
+        assertThat(server.received).extracting(HEX::formatHex).containsExactly(LOGIN_HEX, REPLAY_HEX);
         assertThat(client.symbolFor(7)).contains("SCOM");
-        assertThat(events).filteredOn(AddOrder.class::isInstance).singleElement()
-                .extracting(e -> ((AddOrder) e).orderId()).isEqualTo(123L);
-        assertThat(events).filteredOn(MarketDataSynchronizedEvent.class::isInstance).hasSize(1);
+        assertThat(events).filteredOn(MarketDataMessageEvent.class::isInstance)
+                .map(MarketDataMessageEvent.class::cast)
+                .filteredOn(e -> e.message() instanceof AddOrder)
+                .singleElement()
+                .satisfies(e -> {
+                    assertThat(e.type()).isEqualTo(RequestType.REPLAY);
+                    assertThat(e.requestId()).isEqualTo(305);
+                    assertThat(((AddOrder) e.message()).orderId()).isEqualTo(123L);
+                });
+        assertThat(events).contains(result);
         assertThat(server.errors).isEmpty();
     }
 
     @Test
-    void snapshotCompletesOnSnapshotCompleteMarker() throws Exception {
-        server = new FakeMitchServer(c -> {
+    void missingMarketDataGroupFallsBackToConfiguredGroup() throws Exception {
+        FakeMitchServer server = server(c -> {
+            c.read();
+            c.write(loginResponse('A'));
+            c.read();
+            c.write(replayResponse('C'));
+        });
+        client = client(properties(server.port(), 1, 1));
+
+        client.replay(new ReplayRequestDto(2, null, 9, 305));
+
+        assertThat(HEX.formatHex(server.received.get(1))).isEqualTo(REPLAY_HEX);
+    }
+
+    @Test
+    void snapshotUsesSnapshotPortAndRequestFields() throws Exception {
+        FakeMitchServer snapshotServer = server(c -> {
             c.read();
             c.write(loginResponse('A'));
             c.read();
             c.write(data(1, false, snapshotComplete(5001)));
         });
-        client = client(SyncMode.SNAPSHOT, 1);
+        client = client(properties(1, snapshotServer.port(), 1));
 
-        client.start();
-        client.synchronization().get(5, TimeUnit.SECONDS);
+        MarketDataRequestResult result = client.snapshot(new SnapshotRequestDto(5001, 7, (byte) 4, (byte) 1));
 
-        assertThat(HEX.formatHex(server.received.get(1))).startsWith("1600010101000000" + "0e00" + "81");
-        assertThat(events).contains(new MitchMessage.SnapshotComplete(5001));
+        assertThat(result.status()).isEqualTo(Status.COMPLETED);
+        assertThat(result.type()).isEqualTo(RequestType.SNAPSHOT);
+        assertThat(HEX.formatHex(snapshotServer.received.get(1))).isEqualTo("16000101010000000e00818913000007000000040100");
     }
 
     @Test
-    void rejectedLoginFailsSynchronization() throws Exception {
-        server = new FakeMitchServer(c -> {
+    void rejectedLoginFailsWithoutRetrying() throws Exception {
+        FakeMitchServer server = server(c -> {
             c.read();
             c.write(loginResponse('D'));
         });
-        client = client(SyncMode.REPLAY, 1);
+        client = client(properties(server.port(), 1, 3));
 
-        client.start();
-
-        assertThatThrownBy(() -> client.synchronization().get(5, TimeUnit.SECONDS))
-                .isInstanceOf(ExecutionException.class)
-                .cause().isInstanceOf(MarketDataException.class).hasMessageContaining("Login rejected: Denied (invalid credentials) (status 0x44)");
+        assertThatThrownBy(() -> client.replay(REPLAY))
+                .isInstanceOf(MarketDataRejectedException.class)
+                .hasMessageContaining("Login rejected: Denied (invalid credentials) (status 0x44)");
+        assertThat(server.received).hasSize(1);
+        assertThat(events).filteredOn(MarketDataRequestResult.class::isInstance).singleElement()
+                .extracting(e -> ((MarketDataRequestResult) e).status()).isEqualTo(Status.FAILED);
     }
 
     @Test
-    void rejectedReplayFailsSynchronization() throws Exception {
-        server = new FakeMitchServer(c -> {
+    void rejectedReplayFails() throws Exception {
+        FakeMitchServer server = server(c -> {
             c.read();
             c.write(loginResponse('A'));
             c.read();
             c.write(replayResponse('D'));
             c.read(); // hold the connection open until the client disconnects
         });
-        client = client(SyncMode.REPLAY, 1);
+        client = client(properties(server.port(), 1, 3));
 
-        client.start();
-
-        assertThatThrownBy(() -> client.synchronization().get(5, TimeUnit.SECONDS))
-                .cause().hasMessageContaining("Replay request rejected: Denied (invalid parameters)");
+        assertThatThrownBy(() -> client.replay(REPLAY))
+                .isInstanceOf(MarketDataRejectedException.class)
+                .hasMessageContaining("Replay request rejected: Denied (invalid parameters)");
     }
 
     @Test
-    void retriesWhenConnectionDropsDuringSynchronization() throws Exception {
-        server = new FakeMitchServer(
+    void retriesWhenConnectionDropsBeforeAnyData() throws Exception {
+        FakeMitchServer server = server(
                 FakeMitchServer.Connection::read, // drop right after receiving the login
                 c -> {
                     c.read();
@@ -122,37 +148,81 @@ class MarketDataClientTest {
                     c.read();
                     c.write(replayResponse('C'));
                 });
-        client = client(SyncMode.REPLAY, 2);
+        client = client(properties(server.port(), 1, 2));
 
-        client.start();
-        client.synchronization().get(5, TimeUnit.SECONDS);
-
+        assertThat(client.replay(REPLAY).status()).isEqualTo(Status.COMPLETED);
         assertThat(server.received).hasSize(3);
     }
 
     @Test
-    void stopCancelsPendingSynchronization() throws Exception {
+    void incompleteWhenStreamGoesIdleWithoutCompletionMarker() throws Exception {
+        FakeMitchServer server = server(c -> {
+            c.read();
+            c.write(loginResponse('A'));
+            c.read();
+            c.write(replayResponse('A'), data(symbolDirectory(7, "SCOM")));
+            c.read(); // stay silent until the client disconnects
+        });
+        MitchProperties properties = properties(server.port(), 1, 1);
+        properties.setCompletionTimeout(Duration.ofMillis(300));
+        client = client(properties);
+
+        MarketDataRequestResult result = client.replay(REPLAY);
+
+        assertThat(result.status()).isEqualTo(Status.INCOMPLETE);
+        assertThat(result.records()).isEqualTo(1);
+    }
+
+    @Test
+    void stopAbortsInFlightRequest() throws Exception {
         CountDownLatch loginReceived = new CountDownLatch(1);
-        server = new FakeMitchServer(c -> {
+        FakeMitchServer server = server(c -> {
             c.read();
             loginReceived.countDown();
             c.read(); // never answer
         });
-        client = client(SyncMode.REPLAY, 1);
+        client = client(properties(server.port(), 1, 3));
 
-        client.start();
+        CompletableFuture<MarketDataRequestResult> request = CompletableFuture.supplyAsync(() -> {
+            try {
+                return client.replay(REPLAY);
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+        });
         assertThat(loginReceived.await(5, TimeUnit.SECONDS)).isTrue();
         client.stop();
 
-        assertThatThrownBy(() -> client.synchronization().get(5, TimeUnit.SECONDS))
-                .cause().isInstanceOf(CancellationException.class);
+        assertThatThrownBy(() -> request.get(5, TimeUnit.SECONDS))
+                .cause().isInstanceOf(MarketDataException.class).hasMessageContaining("client stopped");
     }
 
-    private MarketDataClient client(SyncMode mode, int maxAttempts) {
+    @Test
+    void rejectsRequestWithMissingFields() {
+        client = client(properties(1, 1, 1));
+
+        assertThatThrownBy(() -> client.replay(new ReplayRequestDto(null, (byte) 4, 9, 305)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("count is required");
+        assertThatThrownBy(() -> client.snapshot(new SnapshotRequestDto(null, 0, (byte) 4, (byte) 1)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessage("requestID is required");
+    }
+
+    private FakeMitchServer server(FakeMitchServer.Script... scripts) throws IOException {
+        FakeMitchServer server = new FakeMitchServer(scripts);
+        servers.add(server);
+        return server;
+    }
+
+    private MarketDataClient client(MitchProperties properties) {
+        properties.afterPropertiesSet();
+        return new MarketDataClient(properties, events::add);
+    }
+
+    private static MitchProperties properties(int port, int snapshotPort, int maxAttempts) {
         MitchProperties properties = new MitchProperties();
         properties.setHost("127.0.0.1");
-        properties.setPort(server.port());
-        properties.setSnapshotPort(server.port());
+        properties.setPort(port);
+        properties.setSnapshotPort(snapshotPort);
         properties.setUsername("MDUKCB");
         properties.setPassword("mit123");
         properties.setMarketDataGroup((byte) 4);
@@ -163,11 +233,6 @@ class MarketDataClientTest {
         properties.setCompletionTimeout(Duration.ofSeconds(2));
         properties.setMaxConnectAttempts(maxAttempts);
         properties.setRetryBackoff(Duration.ofMillis(10));
-        properties.setSyncMode(mode);
-        properties.getReplay().setStartSequence(9);
-        properties.getReplay().setCount(2);
-        properties.getSnapshot().setRequestId(5001);
-        properties.afterPropertiesSet();
-        return new MarketDataClient(properties, events::add);
+        return properties;
     }
 }

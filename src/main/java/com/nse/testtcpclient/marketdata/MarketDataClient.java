@@ -1,6 +1,7 @@
 package com.nse.testtcpclient.marketdata;
 
 import com.nse.testtcpclient.config.MitchProperties;
+import com.nse.testtcpclient.marketdata.MarketDataRequestResult.Status;
 import com.nse.testtcpclient.marketdata.protocol.FrameReader;
 import com.nse.testtcpclient.marketdata.protocol.MitchDecoder;
 import com.nse.testtcpclient.marketdata.protocol.MitchEncoder;
@@ -14,12 +15,12 @@ import com.nse.testtcpclient.marketdata.protocol.MitchMessage.ReplayResponse;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SnapshotComplete;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SymbolDirectory;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SystemEvent;
+import com.nse.testtcpclient.marketdata.request.ReplayRequestDto;
+import com.nse.testtcpclient.marketdata.request.SnapshotRequestDto;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedInputStream;
@@ -29,11 +30,12 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CancellationException;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -43,8 +45,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Connects to the market data gateway, logs in, runs the configured replay/snapshot synchronization and then keeps
- * consuming messages. Every decoded {@link MitchMessage} is published as a Spring application event.
+ * Runs replay and snapshot requests against the MITCH gateway. Each request gets its own connection: connect, log in,
+ * send the request, consume until the completion marker, disconnect. Decoded messages are published as
+ * {@link MarketDataMessageEvent}s and the outcome as a {@link MarketDataRequestResult}.
  */
 @Component
 public class MarketDataClient {
@@ -56,12 +59,8 @@ public class MarketDataClient {
     private final ApplicationEventPublisher publisher;
     private final MitchDecoder decoder;
     private final Map<Long, String> instrumentCache = new ConcurrentHashMap<>();
-    private final AtomicLong recordsReceived = new AtomicLong();
-
-    private volatile boolean running;
-    private volatile Thread supervisor;
-    private volatile Session session;
-    private volatile CompletableFuture<Void> synchronization = new CompletableFuture<>();
+    private final Set<Session> sessions = ConcurrentHashMap.newKeySet();
+    private volatile boolean stopped;
 
     public MarketDataClient(MitchProperties properties, ApplicationEventPublisher publisher) {
         this.properties = properties;
@@ -69,111 +68,80 @@ public class MarketDataClient {
         this.decoder = new MitchDecoder(properties.isInnerLengthIncludesLengthField());
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void onApplicationReady() {
-        if (properties.isEnabled()) {
-            start();
-        } else {
-            log.info("Market data client disabled (nse.mitch.replay.enabled=false)");
-        }
+    /** Runs a replay on the replay port and blocks until it completes, goes idle or fails. */
+    public MarketDataRequestResult replay(ReplayRequestDto request) throws IOException, InterruptedException {
+        int requestId = required(request.requestID(), "requestID");
+        int startSequence = required(request.startSequence(), "startSequence");
+        int count = required(request.count(), "count");
+        byte group = groupOrDefault(request.marketDataGroup());
+        return execute(RequestType.REPLAY, requestId, properties.getPort(), session -> {
+            log.info("Replay request {} | start seq: {}, count: {}, group: {}", requestId, startSequence, count, group);
+            session.send(MitchEncoder.replayRequest(startSequence, count, group), false);
+            session.awaitReplayAccepted();
+        });
     }
 
-    /** Starts connecting in the background; returns immediately. */
-    public synchronized void start() {
-        if (running) {
-            return;
-        }
-        running = true;
-        synchronization = new CompletableFuture<>();
-        supervisor = Thread.ofVirtual().name("market-data-supervisor").start(this::run);
+    /** Runs a snapshot on the snapshot port and blocks until it completes, goes idle or fails. */
+    public MarketDataRequestResult snapshot(SnapshotRequestDto request) throws IOException, InterruptedException {
+        int requestId = required(request.requestID(), "requestID");
+        int instrumentId = required(request.instrumentId(), "instrumentId");
+        byte snapshotType = required(request.snapshotType(), "snapshotType");
+        byte group = groupOrDefault(request.marketDataGroup());
+        return execute(RequestType.SNAPSHOT, requestId, properties.getSnapshotPort(), session -> {
+            log.info("Snapshot request {} | instrument: {}, group: {}, type: {}",
+                    requestId, instrumentId, group, snapshotType);
+            session.send(MitchEncoder.snapshotRequest(requestId, instrumentId, group, snapshotType), false);
+        });
     }
 
+    /** Aborts in-flight requests and rejects new ones. */
     @PreDestroy
-    public synchronized void stop() {
-        running = false;
-        Session current = session;
-        if (current != null) {
-            current.close();
-        }
-        Thread thread = supervisor;
-        if (thread != null) {
-            thread.interrupt();
-        }
-        synchronization.completeExceptionally(new CancellationException("Market data client stopped"));
-    }
-
-    /** Completes when the initial synchronization finishes; fails if every connection attempt fails. */
-    public CompletableFuture<Void> synchronization() {
-        return synchronization.copy();
+    public void stop() {
+        stopped = true;
+        sessions.forEach(Session::close);
     }
 
     public Optional<String> symbolFor(long instrumentId) {
         return Optional.ofNullable(instrumentCache.get(instrumentId));
     }
 
-    public long recordsReceived() {
-        return recordsReceived.get();
-    }
-
-    public boolean isRunning() {
-        return running;
-    }
-
-    private void run() {
-        try {
-            runWithRetries();
-        } finally {
-            synchronized (this) {
-                if (supervisor == Thread.currentThread()) {
-                    running = false;
-                }
-            }
-        }
-    }
-
-    private void runWithRetries() {
+    private MarketDataRequestResult execute(RequestType type, int requestId, int port, RequestSender sender)
+            throws IOException, InterruptedException {
         int maxAttempts = properties.getMaxConnectAttempts();
-        for (int attempt = 1; running; attempt++) {
-            try (Session current = new Session()) {
-                session = current;
-                current.synchronize();
-                long records = recordsReceived.get();
-                log.info("Data synchronization complete ({} records). Consuming further messages.", records);
-                synchronization.complete(null);
-                publish(new MarketDataSynchronizedEvent(records));
-                current.awaitClosed();
-                return;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            } catch (Exception e) {
-                if (!running) {
-                    return;
+        for (int attempt = 1; ; attempt++) {
+            Session session = new Session(type, requestId, port);
+            try (session) {
+                MarketDataRequestResult result = session.run(sender);
+                publish(result);
+                return result;
+            } catch (IOException e) {
+                // Retrying after data arrived would publish duplicates.
+                boolean retry = !stopped && !(e instanceof MarketDataRejectedException)
+                        && session.records() == 0 && attempt < maxAttempts;
+                if (!retry) {
+                    IOException failure = stopped
+                            ? new MarketDataException("%s request %d aborted: client stopped".formatted(type, requestId), e)
+                            : e;
+                    publish(new MarketDataRequestResult(type, requestId, Status.FAILED, session.records(),
+                            failure.getMessage()));
+                    throw failure;
                 }
-                if (attempt >= maxAttempts) {
-                    log.error("Market data synchronization failed after {} attempt(s)", attempt, e);
-                    synchronization.completeExceptionally(e);
-                    return;
-                }
-                log.warn("Market data attempt {}/{} failed: {}. Retrying in {}",
-                        attempt, maxAttempts, e.toString(), properties.getRetryBackoff());
-            } finally {
-                session = null;
+                log.warn("{} request {} attempt {}/{} failed: {}. Retrying in {}",
+                        type, requestId, attempt, maxAttempts, e.toString(), properties.getRetryBackoff());
             }
-            if (!sleep(properties.getRetryBackoff())) {
-                return;
-            }
+            Thread.sleep(properties.getRetryBackoff());
         }
     }
 
-    private static boolean sleep(Duration duration) {
-        try {
-            Thread.sleep(duration);
-            return true;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
+    private byte groupOrDefault(Byte group) {
+        return group != null ? group : properties.getMarketDataGroup();
+    }
+
+    private static <T> T required(T value, String field) {
+        if (value == null) {
+            throw new IllegalArgumentException(field + " is required");
         }
+        return value;
     }
 
     private void publish(Object event) {
@@ -184,87 +152,69 @@ public class MarketDataClient {
         }
     }
 
-    /** One TCP connection. Never reused: a retry creates a new session. */
+    private static <T> T await(CompletableFuture<T> future, Duration timeout, String what)
+            throws IOException, InterruptedException {
+        try {
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            throw new MarketDataException("Timed out after " + timeout + " waiting for " + what);
+        } catch (ExecutionException e) {
+            throw unwrap(e, what);
+        }
+    }
+
+    private static IOException unwrap(ExecutionException e, String what) {
+        return e.getCause() instanceof IOException io ? io : new MarketDataException("Failed waiting for " + what, e.getCause());
+    }
+
+    @FunctionalInterface
+    private interface RequestSender {
+        void send(Session session) throws IOException, InterruptedException;
+    }
+
+    /** One TCP connection for one request attempt. */
     private final class Session implements AutoCloseable {
 
+        private final RequestType type;
+        private final int requestId;
+        private final int port;
         private final Socket socket = new Socket();
         private final ReentrantLock sendLock = new ReentrantLock();
         private final CompletableFuture<LoginResponse> loginResponse = new CompletableFuture<>();
         private final CompletableFuture<Void> replayAccepted = new CompletableFuture<>();
         private final CompletableFuture<Void> streamCompleted = new CompletableFuture<>();
-        private final CompletableFuture<Void> closed = new CompletableFuture<>();
+        private final AtomicLong records = new AtomicLong();
+        private volatile long lastActivityNanos = System.nanoTime();
         private volatile boolean closing;
         private OutputStream out;
 
-        void synchronize() throws IOException, InterruptedException, TimeoutException {
+        Session(RequestType type, int requestId, int port) {
+            this.type = type;
+            this.requestId = requestId;
+            this.port = port;
+            sessions.add(this);
+            if (stopped) {
+                close();
+            }
+        }
+
+        MarketDataRequestResult run(RequestSender sender) throws IOException, InterruptedException {
             connect();
-            send(MitchEncoder.loginRequest(properties.getUsername(), properties.getPassword()), true);
-            LoginResponse login = await(loginResponse, properties.getLoginTimeout(), "login response");
-            if (!login.accepted()) {
-                throw new MarketDataException("Login rejected: %s (status 0x%02X)"
-                        .formatted(login.describe(), login.status()));
-            }
-            log.info("Logged in as [{}]: {}", properties.getUsername(), login.describe());
-
-            switch (properties.getSyncMode()) {
-                case REPLAY -> {
-                    MitchProperties.Replay replay = properties.getReplay();
-                    log.info("Requesting replay | start seq: {}, count: {}, group: {}",
-                            replay.getStartSequence(), replay.getCount(), properties.getMarketDataGroup());
-                    send(MitchEncoder.replayRequest(replay.getStartSequence(), replay.getCount(),
-                            properties.getMarketDataGroup()), false);
-                    await(replayAccepted, properties.getAcceptTimeout(), "replay acceptance");
-                    awaitCompletion();
-                }
-                case SNAPSHOT -> {
-                    MitchProperties.Snapshot snapshot = properties.getSnapshot();
-                    log.info("Requesting snapshot | request id: {}, instrument: {}, group: {}, type: {}",
-                            snapshot.getRequestId(), snapshot.getInstrumentId(), properties.getMarketDataGroup(),
-                            snapshot.getSnapshotType());
-                    send(MitchEncoder.snapshotRequest(snapshot.getRequestId(), snapshot.getInstrumentId(),
-                            properties.getMarketDataGroup(), snapshot.getSnapshotType()), false);
-                    awaitCompletion();
-                }
-                case NONE -> log.info("Sync mode NONE: skipping replay/snapshot");
-            }
+            login();
+            sender.send(this);
+            Status status = awaitCompletion() ? Status.COMPLETED : Status.INCOMPLETE;
+            return new MarketDataRequestResult(type, requestId, status, records.get(), null);
         }
 
-        void awaitClosed() throws InterruptedException, ExecutionException {
-            closed.get();
+        long records() {
+            return records.get();
         }
 
-        @Override
-        public void close() {
-            closing = true;
-            try {
-                socket.close();
-            } catch (IOException e) {
-                log.debug("Error closing market data socket", e);
-            }
+        void awaitReplayAccepted() throws IOException, InterruptedException {
+            await(replayAccepted, properties.getAcceptTimeout(), "replay acceptance");
         }
 
-        private void connect() throws IOException {
-            socket.setKeepAlive(true);
-            socket.setTcpNoDelay(true);
-            socket.connect(new InetSocketAddress(properties.getHost(), properties.connectPort()),
-                    toMillis(properties.getConnectTimeout()));
-            socket.setSoTimeout(properties.getSocketTimeoutMs());
-            out = new BufferedOutputStream(socket.getOutputStream());
-            FrameReader reader = new FrameReader(new BufferedInputStream(socket.getInputStream()));
-            Thread.ofVirtual().name("market-data-listener").start(() -> listen(reader));
-            log.info("Connected to {}:{}", properties.getHost(), properties.connectPort());
-        }
-
-        private void awaitCompletion() throws IOException, InterruptedException {
-            log.info("Waiting for stream completion marker...");
-            try {
-                await(streamCompleted, properties.getCompletionTimeout(), "stream completion marker");
-            } catch (TimeoutException e) {
-                log.warn("{}; continuing without it", e.getMessage());
-            }
-        }
-
-        private void send(byte[] data, boolean sensitive) throws IOException {
+        void send(byte[] data, boolean sensitive) throws IOException {
             sendLock.lock();
             try {
                 out.write(data);
@@ -277,10 +227,70 @@ public class MarketDataClient {
             }
         }
 
+        @Override
+        public void close() {
+            closing = true;
+            sessions.remove(this);
+            try {
+                socket.close();
+            } catch (IOException e) {
+                log.debug("Error closing market data socket", e);
+            }
+        }
+
+        private void connect() throws IOException {
+            socket.setKeepAlive(true);
+            socket.setTcpNoDelay(true);
+            socket.connect(new InetSocketAddress(properties.getHost(), port),
+                    Math.toIntExact(properties.getConnectTimeout().toMillis()));
+            socket.setSoTimeout(properties.getSocketTimeoutMs());
+            out = new BufferedOutputStream(socket.getOutputStream());
+            FrameReader reader = new FrameReader(new BufferedInputStream(socket.getInputStream()));
+            Thread.ofVirtual().name("mitch-" + type.name().toLowerCase() + "-" + requestId).start(() -> listen(reader));
+            log.info("{} request {}: connected to {}:{}", type, requestId, properties.getHost(), port);
+        }
+
+        private void login() throws IOException, InterruptedException {
+            send(MitchEncoder.loginRequest(properties.getUsername(), properties.getPassword()), true);
+            LoginResponse login = await(loginResponse, properties.getLoginTimeout(), "login response");
+            if (!login.accepted()) {
+                throw new MarketDataRejectedException("Login rejected: %s (status 0x%02X)"
+                        .formatted(login.describe(), login.status()));
+            }
+            log.info("Logged in as [{}]: {}", properties.getUsername(), login.describe());
+        }
+
+        /** True when the completion marker arrives; false after {@code completion-timeout} without data. */
+        private boolean awaitCompletion() throws IOException, InterruptedException {
+            Duration idleTimeout = properties.getCompletionTimeout();
+            while (true) {
+                long remaining = lastActivityNanos + idleTimeout.toNanos() - System.nanoTime();
+                if (remaining <= 0) {
+                    log.warn("{} request {}: no completion marker and no data for {}; closing after {} records",
+                            type, requestId, idleTimeout, records.get());
+                    return false;
+                }
+                try {
+                    streamCompleted.get(remaining, TimeUnit.NANOSECONDS);
+                    log.info("{} request {} complete ({} records)", type, requestId, records.get());
+                    return true;
+                } catch (TimeoutException e) {
+                    // data may have arrived meanwhile; re-check the idle deadline
+                } catch (ExecutionException e) {
+                    if (e.getCause() instanceof SocketTimeoutException) {
+                        log.warn("{} request {}: socket read timed out before the completion marker", type, requestId);
+                        return false;
+                    }
+                    throw unwrap(e, "stream completion marker");
+                }
+            }
+        }
+
         private void listen(FrameReader reader) {
             try {
                 while (!closing) {
                     byte[] frame = reader.readFrame();
+                    lastActivityNanos = System.nanoTime();
                     if (log.isTraceEnabled()) {
                         log.trace("RX <- {}", HEX.formatHex(frame));
                     }
@@ -290,26 +300,33 @@ public class MarketDataClient {
                 }
             } catch (EOFException e) {
                 if (streamCompleted.isDone()) {
-                    log.info("Connection closed by host after stream completion");
+                    log.debug("{} request {}: connection closed by host after completion", type, requestId);
                 } else if (!closing) {
-                    log.error("Connection closed by host before stream completion");
+                    log.error("{} request {}: connection closed by host before completion", type, requestId);
                 }
                 failPending(e);
             } catch (IOException | RuntimeException e) {
                 if (!closing) {
-                    log.error("Market data listener stopped", e);
+                    log.error("{} request {}: listener stopped", type, requestId, e);
                 }
                 failPending(e);
-            } finally {
-                closed.complete(null);
             }
         }
 
         private void handle(MitchMessage message) {
-            recordsReceived.incrementAndGet();
             switch (message) {
                 case LoginResponse response -> loginResponse.complete(response);
                 case ReplayResponse response -> onReplayResponse(response);
+                default -> {
+                    records.incrementAndGet();
+                    onData(message);
+                }
+            }
+            publish(new MarketDataMessageEvent(type, requestId, message));
+        }
+
+        private void onData(MitchMessage message) {
+            switch (message) {
                 case SnapshotComplete complete -> {
                     log.info("End of snapshot for request id {}", complete.requestId());
                     streamCompleted.complete(null);
@@ -323,7 +340,6 @@ public class MarketDataClient {
                 case Malformed malformed -> log.warn("Malformed message: {}", malformed);
                 default -> log.debug("RX {}", message);
             }
-            publish(message);
         }
 
         private void onReplayResponse(ReplayResponse response) {
@@ -337,7 +353,7 @@ public class MarketDataClient {
                 streamCompleted.complete(null);
             } else {
                 replayAccepted.completeExceptionally(
-                        new MarketDataException("Replay request rejected: " + response.describe()));
+                        new MarketDataRejectedException("Replay request rejected: " + response.describe()));
             }
         }
 
@@ -345,24 +361,6 @@ public class MarketDataClient {
             loginResponse.completeExceptionally(cause);
             replayAccepted.completeExceptionally(cause);
             streamCompleted.completeExceptionally(cause);
-        }
-
-        private static <T> T await(CompletableFuture<T> future, Duration timeout, String what)
-                throws IOException, InterruptedException, TimeoutException {
-            try {
-                return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-            } catch (TimeoutException e) {
-                throw new TimeoutException("Timed out after " + timeout + " waiting for " + what);
-            } catch (ExecutionException e) {
-                if (e.getCause() instanceof IOException io) {
-                    throw io;
-                }
-                throw new MarketDataException("Failed waiting for " + what, e.getCause());
-            }
-        }
-
-        private static int toMillis(Duration duration) {
-            return Math.toIntExact(duration.toMillis());
         }
     }
 }

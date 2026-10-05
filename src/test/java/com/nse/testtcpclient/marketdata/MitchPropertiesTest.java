@@ -24,23 +24,18 @@ class MitchPropertiesTest {
                         "nse.mitch.replay.username=MDUKCB",
                         "nse.mitch.replay.password=secret",
                         "nse.mitch.replay.market-data-group=4",
-                        "nse.mitch.replay.sync-mode=snapshot",
                         "nse.mitch.replay.login-timeout=3s",
-                        "nse.mitch.replay.replay.start-sequence=9",
-                        "nse.mitch.replay.replay.count=2",
-                        "nse.mitch.replay.snapshot.request-id=5001")
+                        "nse.mitch.replay.replay-topic=REPLAY_IN")
                 .run(context -> {
                     assertThat(context).hasSingleBean(MarketDataClient.class);
                     MitchProperties properties = context.getBean(MitchProperties.class);
                     assertThat(properties.getPort()).isEqualTo(13496);
-                    assertThat(properties.connectPort()).isEqualTo(13497);
+                    assertThat(properties.getSnapshotPort()).isEqualTo(13497);
                     assertThat(properties.getMarketDataGroup()).isEqualTo((byte) 4);
                     assertThat(properties.getSocketTimeoutMs()).isEqualTo(10_000);
-                    assertThat(properties.getSyncMode()).isEqualTo(MitchProperties.SyncMode.SNAPSHOT);
                     assertThat(properties.getLoginTimeout()).isEqualTo(Duration.ofSeconds(3));
-                    assertThat(properties.getReplay().getStartSequence()).isEqualTo(9);
-                    assertThat(properties.getReplay().getCount()).isEqualTo(2);
-                    assertThat(properties.getSnapshot().getRequestId()).isEqualTo(5001);
+                    assertThat(properties.getReplayTopic()).isEqualTo("REPLAY_IN");
+                    assertThat(properties.getSnapshotTopic()).isEqualTo("SNAPSHOT_REQUEST");
                     assertThat(properties.toString()).doesNotContain("secret");
                 });
     }

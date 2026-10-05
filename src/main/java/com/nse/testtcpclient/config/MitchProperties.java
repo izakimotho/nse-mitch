@@ -15,51 +15,34 @@ public class MitchProperties implements InitializingBean {
 
     private static final String PREFIX = "nse.mitch.replay.";
 
-    public enum SyncMode { REPLAY, SNAPSHOT, NONE }
-
+    /** When false, the Kafka request listeners are not registered. */
     private boolean enabled = true;
     private String host;
+    /** Replay channel port. */
     private int port = 13496;
-    /** Used instead of {@code port} when sync-mode is SNAPSHOT. */
+    /** Snapshot channel port. */
     private int snapshotPort = 13496;
     private String username;
     @ToString.Exclude
     private String password;
-    /** Market data group sent in replay and snapshot requests. */
+    /** Used when a request omits marketDataGroup. */
     private byte marketDataGroup = 1;
     /** Not used by the client (the server sends heartbeats); kept for existing callers. */
     private int heartbeatIntervalSeconds = 5;
-    /** Socket read timeout; 0 blocks indefinitely. Keep it above the heartbeat interval. */
+    /** Socket read timeout; 0 blocks indefinitely. */
     private int socketTimeoutMs = 10_000;
     private Duration connectTimeout = Duration.ofSeconds(5);
     private Duration loginTimeout = Duration.ofSeconds(10);
     private Duration acceptTimeout = Duration.ofSeconds(10);
+    /** Give up waiting for the completion marker after this long without data. */
     private Duration completionTimeout = Duration.ofSeconds(10);
     private int maxConnectAttempts = 3;
     private Duration retryBackoff = Duration.ofSeconds(5);
     /** Whether inbound inner-message lengths count their own 2-byte length field. */
     private boolean innerLengthIncludesLengthField = false;
-    private SyncMode syncMode = SyncMode.REPLAY;
-    private Replay replay = new Replay();
-    private Snapshot snapshot = new Snapshot();
-
-    @Data
-    public static class Replay {
-        private int startSequence = 1;
-        private int count = 0;
-    }
-
-    @Data
-    public static class Snapshot {
-        private int requestId = 1;
-        private int instrumentId = 0;
-        private byte snapshotType = 1;
-    }
-
-    /** Port for the configured sync mode. */
-    public int connectPort() {
-        return syncMode == SyncMode.SNAPSHOT ? snapshotPort : port;
-    }
+    private String replayTopic = "MARKET_REPLAY_REQUEST";
+    private String snapshotTopic = "SNAPSHOT_REQUEST";
+    private String kafkaGroupId = "nse-mitch-client";
 
     @Override
     public void afterPropertiesSet() {
