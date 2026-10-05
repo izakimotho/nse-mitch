@@ -1,5 +1,6 @@
 package com.nse.testtcpclient.marketdata.protocol;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -51,11 +52,16 @@ public final class TestFrames {
     }
 
     public static byte[] symbolDirectory(long nanosecond, String symbol, char status) {
-        return message(0x52, 17, b -> b.putInt((int) nanosecond).put(padded(symbol, 12)).put((byte) status));
+        return message(0x52, 87, b -> b.putInt((int) nanosecond).put(padded(symbol, 12)).put((byte) status)
+                .put(padded("KE1000001402", 12)).put(padded("MBD", 6)).put(padded("", 8)).put(padded("", 6))
+                .putInt(0).put((byte) ' ').put(padded("SCOM", 6)).put(padded("", 8)).putInt(0)
+                .put((byte) 0).put((byte) 1).put(padded("", 5)).putLong(4_006_542_800_000_000_000L));
     }
 
-    public static byte[] instrumentDefinition(long instrumentId, String symbol) {
-        return message(0x65, 20, b -> b.putInt((int) instrumentId).put(padded(symbol, 16)));
+    public static MitchMessage.SymbolDirectory expectedSymbolDirectory(long nanosecond, String symbol, char status) {
+        return new MitchMessage.SymbolDirectory(nanosecond, symbol, status, "KE1000001402", "MBD", "", "",
+                BigDecimal.valueOf(0, 4), ' ', "SCOM", "", BigDecimal.valueOf(0, 4), 0, 1, "",
+                new BigDecimal("40065428000.00000000"));
     }
 
     public static byte[] snapshotResponse(char status, int requestId) {
@@ -63,13 +69,10 @@ public final class TestFrames {
                 .putInt(50).putInt(2).put((byte) status).put((byte) 0).putInt(requestId).array());
     }
 
-    public static byte[] addOrder(long orderId, long instrumentId, char side, int quantity, int rawPrice) {
-        return message(0x41, 21, b -> b.putLong(orderId).putInt((int) instrumentId).put((byte) side)
-                .putInt(quantity).putInt(rawPrice));
-    }
-
-    public static byte[] historicalSymbol(String symbol) {
-        return message(0x23, 16, b -> b.putInt(0x0BADF00D).put(padded(symbol, 12)));
+    public static byte[] addOrder(long orderId, char side, int quantity, String symbol, int rawPrice) {
+        return message(0x41, 41, b -> b.putInt(1_000).putLong(orderId).put((byte) side).putInt(quantity)
+                .put(padded(symbol, 12)).putInt(rawPrice).put((byte) 0).put((byte) 1).put((byte) 0).putInt(0)
+                .put((byte) 0));
     }
 
     public static byte[] snapshotComplete(int requestId) {
