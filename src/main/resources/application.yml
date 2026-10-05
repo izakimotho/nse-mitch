@@ -1,0 +1,16 @@
+nse:
+  mitch:
+    replay:
+      host: ${MITCH_HOST}
+      port: 13496                # replay channel
+      snapshot-port: ${MITCH_SNAPSHOT_PORT}
+      username: ${MITCH_USERNAME}
+      password: ${MITCH_PASSWORD}
+      market-data-group: 1       # used only when a request omits marketDataGroup
+      socket-timeout-ms: 10000   # read timeout; 0 = block forever
+      completion-timeout: 10s    # give up waiting for the completion marker after this long without data
+      replay-topic: MARKET_REPLAY_REQUEST
+      snapshot-topic: SNAPSHOT_REQUEST
+      replay-response-topic: MARKET_REPLAY_RESPONSE   # raw frames, key = requestID
+      snapshot-response-topic: SNAPSHOT_RESPONSE
+      kafka-group-id: nse-mitch-client
