@@ -1,0 +1,15 @@
+marketdata:
+  host: ${MARKETDATA_HOST}
+  port: 13496
+  username: ${MARKETDATA_USERNAME}
+  password: ${MARKETDATA_PASSWORD}
+  sync-mode: replay            # replay | snapshot | none
+  replay:
+    start-sequence: 4
+    count: 4
+    market-data-group: 45      # old code had (byte) 813, which overflows to 45; confirm the intended group
+  snapshot:
+    request-id: 5001
+    instrument-id: 0
+    market-data-group: 4
+    snapshot-type: 1
