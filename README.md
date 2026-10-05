@@ -54,6 +54,8 @@ void onResult(MarketDataRequestResult result) { ... }   // COMPLETED | INCOMPLET
 
 * Connection failures before any market data arrives are retried (`max-connect-attempts`, `retry-backoff`). Rejected
   logins/requests and failures after data has arrived are not retried, to avoid duplicate events.
+* Snapshots: a Snapshot Response (0x82) with a status other than `A` fails the request (not retried); only Snapshot
+  Complete (0x83) completes it. Replays complete on Replay Response status `C`.
 * `completion-timeout` is an idle timeout: the request ends as `INCOMPLETE` after that long without data and without a
   completion marker.
 * `requestID` is not sent in replay requests (the wire format has no field for it); it tags events and results.
@@ -64,8 +66,8 @@ Unit header (little-endian): `length:u16 | messageCount:u8 | marketDataGroup:u8 
 
 ## Verify against the venue spec
 
-* `nse.mitch.replay.inner-length-includes-length-field` (default `false`). Outbound requests count the 2-byte length
-  field; if inbound bundles do too, set this to `true`.
+* `nse.mitch.replay.inner-length-includes-length-field` (default `true`, per the spec: "Length of message including
+  this field"). Set to `false` only if the gateway is observed to send lengths without the 2-byte field.
 * Add Order price is decoded as a 4-byte int with 4 implied decimals (`BigDecimal`).
 
 ## Build

@@ -47,7 +47,7 @@ class MarketDataClientTest {
     @Test
     void replaySendsRequestParametersAndPublishesTaggedEvents() throws Exception {
         byte[] accepted = replayResponse('A');
-        byte[] data = data(symbolDirectory(7, "SCOM"), historicalSymbol("KCB"), addOrder(123L, 7, 'B', 500, 152_500));
+        byte[] data = data(instrumentDefinition(7, "SCOM"), historicalSymbol("KCB"), addOrder(123L, 7, 'B', 500, 152_500));
         byte[] complete = replayResponse('C');
         FakeMitchServer server = server(c -> {
             c.read();
@@ -101,7 +101,7 @@ class MarketDataClientTest {
             c.read();
             c.write(loginResponse('A'));
             c.read();
-            c.write(data(1, false, snapshotComplete(5001)));
+            c.write(snapshotResponse('A', 5001), data(1, true, snapshotComplete(5001)));
         });
         client = client(properties(1, snapshotServer.port(), 1));
 
@@ -111,6 +111,23 @@ class MarketDataClientTest {
         assertThat(result.type()).isEqualTo(RequestType.SNAPSHOT);
         assertThat(HEX.formatHex(snapshotServer.received.get(1))).isEqualTo("2f00010101000000" + "270081" + "00000000"
                 + "20".repeat(6) + "53434f4d" + "20".repeat(8) + "01" + "00" + "20".repeat(8) + "89130000");
+    }
+
+    @Test
+    void rejectedSnapshotFails() throws Exception {
+        FakeMitchServer server = server(c -> {
+            c.read();
+            c.write(loginResponse('A'));
+            c.read();
+            c.write(snapshotResponse('U', 5001));
+            c.read(); // hold the connection open until the client disconnects
+        });
+        client = client(properties(1, server.port(), 3));
+
+        assertThatThrownBy(() -> client.snapshot(new SnapshotRequestDto(5001, 0, null, "SCOM", 1, 0, null)))
+                .isInstanceOf(MarketDataRejectedException.class)
+                .hasMessage("Snapshot request rejected: Snapshot Unavailable");
+        assertThat(server.received).hasSize(2);
     }
 
     @Test
@@ -167,7 +184,7 @@ class MarketDataClientTest {
             c.read();
             c.write(loginResponse('A'));
             c.read();
-            c.write(replayResponse('A'), data(symbolDirectory(7, "SCOM")));
+            c.write(replayResponse('A'), data(symbolDirectory(7, "SCOM", ' ')));
             c.read(); // stay silent until the client disconnects
         });
         MitchProperties properties = properties(server.port(), 1, 1);

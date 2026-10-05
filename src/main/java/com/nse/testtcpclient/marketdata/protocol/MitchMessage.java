@@ -40,21 +40,43 @@ public sealed interface MitchMessage {
         }
     }
 
-    record SnapshotComplete(int requestId) implements MitchMessage {
+    /** Spec 7.8.4 (0x82): accept/reject reply to a snapshot request. */
+    record SnapshotResponse(long sequenceNumber, long orderCount, char status, int snapshotType, int requestId)
+            implements MitchMessage {
+        public boolean accepted() {
+            return status == 'A';
+        }
+
+        public String describe() {
+            return switch (status) {
+                case 'A' -> "Request Accepted";
+                case 'O' -> "Out of Range";
+                case 'U' -> "Snapshot Unavailable";
+                case 'a' -> "Segment, Symbol or Sub Book Invalid or Not Specified";
+                case 'b' -> "Request Limit Reached";
+                case 'c' -> "Concurrent Limit Reached";
+                case 'd' -> "Unsupported Message Type";
+                case 'e' -> "Failed (Other)";
+                default -> "Unknown status '" + status + "'";
+            };
+        }
+    }
+
+    /** Spec 7.8.5 (0x83): the snapshot has been fully sent. */
+    record SnapshotComplete(long sequenceNumber, String segment, String symbol, int subBook, char tradingStatus,
+                            int snapshotType, int requestId) implements MitchMessage {
     }
 
     record TimeHeartbeat(long secondsPastMidnight) implements MitchMessage {
     }
 
-    record SystemEvent(char eventCode) implements MitchMessage {
+    /** Spec 7.9.2 (0x53). */
+    record SystemEvent(long nanosecond, char eventCode) implements MitchMessage {
         public String describe() {
             return switch (eventCode) {
                 case 'O' -> "Start of Day";
-                case 'S' -> "Start of Session";
-                case 'C' -> "End of Session";
-                case 'E' -> "End of Day";
-                case 'H' -> "Trading Halt";
-                default -> "Unknown lifecycle code '" + eventCode + "'";
+                case 'C' -> "End of Day";
+                default -> "Unknown event code '" + eventCode + "'";
             };
         }
     }
@@ -62,7 +84,17 @@ public sealed interface MitchMessage {
     record InstrumentDefinition(long instrumentId, String symbol) implements MitchMessage {
     }
 
-    record SymbolDirectory(long instrumentId, String symbol) implements MitchMessage {
+    /** Spec 7.9.3 (0x52). */
+    record SymbolDirectory(long nanosecond, String symbol, char symbolStatus) implements MitchMessage {
+        public String describeStatus() {
+            return switch (symbolStatus) {
+                case ' ' -> "Active";
+                case 'H' -> "Halted";
+                case 'S' -> "Suspended";
+                case 'a' -> "Inactive";
+                default -> "Unknown status '" + symbolStatus + "'";
+            };
+        }
     }
 
     /** Type 0x23: carries a symbol but no instrument id, so it is not cached. */

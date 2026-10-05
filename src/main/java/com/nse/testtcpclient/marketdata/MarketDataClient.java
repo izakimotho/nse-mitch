@@ -13,7 +13,7 @@ import com.nse.testtcpclient.marketdata.protocol.MitchMessage.LoginResponse;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.Malformed;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.ReplayResponse;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SnapshotComplete;
-import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SymbolDirectory;
+import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SnapshotResponse;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SystemEvent;
 import com.nse.testtcpclient.marketdata.request.ReplayRequestDto;
 import com.nse.testtcpclient.marketdata.request.SnapshotRequestDto;
@@ -78,7 +78,7 @@ public class MarketDataClient {
         return execute(RequestType.REPLAY, requestId, properties.getPort(), session -> {
             log.info("Replay request {} | start seq: {}, count: {}, group: {}", requestId, startSequence, count, group);
             session.send(MitchEncoder.replayRequest(startSequence, count, group), false);
-            session.awaitReplayAccepted();
+            session.awaitAccepted("replay acceptance");
         });
     }
 
@@ -95,6 +95,7 @@ public class MarketDataClient {
                     requestId, sequenceNumber, request.segment(), request.symbol(), subBook, snapshotType,
                     request.recoverFromTime());
             session.send(packet, false);
+            session.awaitAccepted("snapshot response");
         });
     }
 
@@ -185,7 +186,7 @@ public class MarketDataClient {
         private final Socket socket = new Socket();
         private final ReentrantLock sendLock = new ReentrantLock();
         private final CompletableFuture<LoginResponse> loginResponse = new CompletableFuture<>();
-        private final CompletableFuture<Void> replayAccepted = new CompletableFuture<>();
+        private final CompletableFuture<Void> requestAccepted = new CompletableFuture<>();
         private final CompletableFuture<Void> streamCompleted = new CompletableFuture<>();
         private final AtomicLong records = new AtomicLong();
         private volatile long lastActivityNanos = System.nanoTime();
@@ -216,8 +217,8 @@ public class MarketDataClient {
             return records.get();
         }
 
-        void awaitReplayAccepted() throws IOException, InterruptedException {
-            await(replayAccepted, properties.getAcceptTimeout(), "replay acceptance");
+        void awaitAccepted(String what) throws IOException, InterruptedException {
+            await(requestAccepted, properties.getAcceptTimeout(), what);
         }
 
         void send(byte[] data, boolean sensitive) throws IOException {
@@ -326,6 +327,7 @@ public class MarketDataClient {
             switch (message) {
                 case LoginResponse response -> loginResponse.complete(response);
                 case ReplayResponse response -> onReplayResponse(response);
+                case SnapshotResponse response -> onSnapshotResponse(response);
                 default -> {
                     records.incrementAndGet();
                     onData(message);
@@ -341,7 +343,6 @@ public class MarketDataClient {
                     streamCompleted.complete(null);
                 }
                 case InstrumentDefinition definition -> instrumentCache.put(definition.instrumentId(), definition.symbol());
-                case SymbolDirectory directory -> instrumentCache.put(directory.instrumentId(), directory.symbol());
                 case AddOrder order -> log.debug("Add order {} [{}]", order,
                         symbolFor(order.instrumentId()).orElse("UNKNOWN_" + order.instrumentId()));
                 case SystemEvent event -> log.info("System event '{}' -> {}", event.eventCode(), event.describe());
@@ -356,19 +357,31 @@ public class MarketDataClient {
                     response.requestId(), response.channelId(), response.marketDataGroup(), response.status(),
                     response.describe());
             if (response.accepted()) {
-                replayAccepted.complete(null);
+                requestAccepted.complete(null);
             } else if (response.complete()) {
-                replayAccepted.complete(null);
+                requestAccepted.complete(null);
                 streamCompleted.complete(null);
             } else {
-                replayAccepted.completeExceptionally(
+                requestAccepted.completeExceptionally(
                         new MarketDataRejectedException("Replay request rejected: " + response.describe()));
+            }
+        }
+
+        private void onSnapshotResponse(SnapshotResponse response) {
+            log.info("Snapshot response | request id: {}, seq: {}, orders: {}, type: {}, status: {} -> {}",
+                    response.requestId(), response.sequenceNumber(), response.orderCount(), response.snapshotType(),
+                    response.status(), response.describe());
+            if (response.accepted()) {
+                requestAccepted.complete(null);
+            } else {
+                requestAccepted.completeExceptionally(
+                        new MarketDataRejectedException("Snapshot request rejected: " + response.describe()));
             }
         }
 
         private void failPending(Exception cause) {
             loginResponse.completeExceptionally(cause);
-            replayAccepted.completeExceptionally(cause);
+            requestAccepted.completeExceptionally(cause);
             streamCompleted.completeExceptionally(cause);
         }
     }

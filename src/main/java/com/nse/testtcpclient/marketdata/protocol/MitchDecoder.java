@@ -24,7 +24,7 @@ public final class MitchDecoder {
 
     /**
      * @param innerLengthIncludesLengthField whether an inner message's u16 length counts its own two bytes
-     *                                       (outbound requests do; verify inbound against the venue spec)
+     *                                       (the spec says it does)
      */
     public MitchDecoder(boolean innerLengthIncludesLengthField) {
         this.innerLengthIncludesLengthField = innerLengthIncludesLengthField;
@@ -49,7 +49,7 @@ public final class MitchDecoder {
             return false;
         }
         int type = frame[CONTROL_MESSAGE_TYPE_OFFSET] & 0xFF;
-        return type == LOGIN_RESPONSE || type == REPLAY_RESPONSE;
+        return type == LOGIN_RESPONSE || type == REPLAY_RESPONSE || type == SNAPSHOT_RESPONSE;
     }
 
     private List<MitchMessage> decodeMessages(byte[] frame) {
@@ -90,11 +90,14 @@ public final class MitchDecoder {
             case LOGIN_RESPONSE -> new LoginResponse(body.get() & 0xFF);
             case REPLAY_RESPONSE -> new ReplayResponse(body.getInt(), bigEndianUnsignedShort(body), body.get() & 0xFF,
                     (char) (body.get() & 0xFF));
-            case SNAPSHOT_COMPLETE, SNAPSHOT_COMPLETE_ALT -> new SnapshotComplete(body.getInt());
+            case SNAPSHOT_RESPONSE -> new SnapshotResponse(unsignedInt(body), unsignedInt(body),
+                    (char) (body.get() & 0xFF), body.get() & 0xFF, body.getInt());
+            case SNAPSHOT_COMPLETE -> new SnapshotComplete(unsignedInt(body), ascii(body, 6), ascii(body, 12),
+                    body.get() & 0xFF, (char) (body.get() & 0xFF), body.get() & 0xFF, body.getInt());
             case TIME -> new TimeHeartbeat(unsignedInt(body));
-            case SYSTEM_EVENT -> new SystemEvent((char) (body.get() & 0xFF));
+            case SYSTEM_EVENT -> new SystemEvent(unsignedInt(body), (char) (body.get() & 0xFF));
             case INSTRUMENT_DEFINITION -> new InstrumentDefinition(unsignedInt(body), ascii(body, 16));
-            case SYMBOL_DIRECTORY -> new SymbolDirectory(unsignedInt(body), ascii(body, 12));
+            case SYMBOL_DIRECTORY -> new SymbolDirectory(unsignedInt(body), ascii(body, 12), (char) (body.get() & 0xFF));
             case SYMBOL_DIRECTORY_HISTORICAL -> historicalSymbol(body);
             case ADD_ORDER -> new AddOrder(body.getLong(), unsignedInt(body), (char) (body.get() & 0xFF),
                     unsignedInt(body), BigDecimal.valueOf(body.getInt(), PRICE_SCALE));

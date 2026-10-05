@@ -27,8 +27,8 @@ public final class MitchProtocol {
     public static final int INSTRUMENT_DEFINITION = 0x65;
     public static final int SYSTEM_REGISTRY_TEXT = 0x71;
     public static final int SNAPSHOT_REQUEST = 0x81;
-    public static final int SNAPSHOT_COMPLETE = 0x82;
-    public static final int SNAPSHOT_COMPLETE_ALT = 0x83;
+    public static final int SNAPSHOT_RESPONSE = 0x82;
+    public static final int SNAPSHOT_COMPLETE = 0x83;
 
     private MitchProtocol() {
     }

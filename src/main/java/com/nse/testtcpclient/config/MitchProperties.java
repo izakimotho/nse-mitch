@@ -38,8 +38,8 @@ public class MitchProperties implements InitializingBean {
     private Duration completionTimeout = Duration.ofSeconds(10);
     private int maxConnectAttempts = 3;
     private Duration retryBackoff = Duration.ofSeconds(5);
-    /** Whether inbound inner-message lengths count their own 2-byte length field. */
-    private boolean innerLengthIncludesLengthField = false;
+    /** Whether inbound inner-message lengths count their own 2-byte length field (spec: they do). */
+    private boolean innerLengthIncludesLengthField = true;
     private String replayTopic = "MARKET_REPLAY_REQUEST";
     private String snapshotTopic = "SNAPSHOT_REQUEST";
     private String replayResponseTopic = "MARKET_REPLAY_RESPONSE";

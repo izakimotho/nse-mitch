@@ -32,7 +32,7 @@ public final class TestFrames {
     }
 
     public static byte[] data(byte[]... messages) {
-        return data(10, false, messages);
+        return data(10, true, messages);
     }
 
     public static byte[] message(int type, int bodySize, Consumer<ByteBuffer> body) {
@@ -50,8 +50,17 @@ public final class TestFrames {
                 .putInt(9).put((byte) 0).put((byte) 10).put((byte) 4).put((byte) status).array()); // channel 10, big-endian
     }
 
-    public static byte[] symbolDirectory(long instrumentId, String symbol) {
-        return message(0x52, 16, b -> b.putInt((int) instrumentId).put(padded(symbol, 12)));
+    public static byte[] symbolDirectory(long nanosecond, String symbol, char status) {
+        return message(0x52, 17, b -> b.putInt((int) nanosecond).put(padded(symbol, 12)).put((byte) status));
+    }
+
+    public static byte[] instrumentDefinition(long instrumentId, String symbol) {
+        return message(0x65, 20, b -> b.putInt((int) instrumentId).put(padded(symbol, 16)));
+    }
+
+    public static byte[] snapshotResponse(char status, int requestId) {
+        return control(0x82, ByteBuffer.allocate(14).order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(50).putInt(2).put((byte) status).put((byte) 0).putInt(requestId).array());
     }
 
     public static byte[] addOrder(long orderId, long instrumentId, char side, int quantity, int rawPrice) {
@@ -64,7 +73,12 @@ public final class TestFrames {
     }
 
     public static byte[] snapshotComplete(int requestId) {
-        return message(0x82, 4, b -> b.putInt(requestId));
+        return message(0x83, 29, b -> b.putInt(50).put(padded("", 6)).put(padded("SCOM", 12))
+                .put((byte) 1).put((byte) 'T').put((byte) 0).putInt(requestId));
+    }
+
+    public static MitchMessage.SnapshotComplete expectedSnapshotComplete(int requestId) {
+        return new MitchMessage.SnapshotComplete(50, "", "SCOM", 1, 'T', 0, requestId);
     }
 
     public static byte[] padded(String value, int width) {
