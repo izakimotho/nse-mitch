@@ -7,13 +7,12 @@ import com.nse.testtcpclient.marketdata.protocol.MitchDecoder;
 import com.nse.testtcpclient.marketdata.protocol.MitchEncoder;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.AddOrder;
-import com.nse.testtcpclient.marketdata.protocol.MitchMessage.HistoricalSymbol;
-import com.nse.testtcpclient.marketdata.protocol.MitchMessage.InstrumentDefinition;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.LoginResponse;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.Malformed;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.ReplayResponse;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SnapshotComplete;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SnapshotResponse;
+import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SymbolDirectory;
 import com.nse.testtcpclient.marketdata.protocol.MitchMessage.SystemEvent;
 import com.nse.testtcpclient.marketdata.request.ReplayRequestDto;
 import com.nse.testtcpclient.marketdata.request.SnapshotRequestDto;
@@ -59,7 +58,7 @@ public class MarketDataClient {
     private final MitchProperties properties;
     private final ApplicationEventPublisher publisher;
     private final MitchDecoder decoder;
-    private final Map<Long, String> instrumentCache = new ConcurrentHashMap<>();
+    private final Map<String, SymbolDirectory> symbols = new ConcurrentHashMap<>();
     private final Set<Session> sessions = ConcurrentHashMap.newKeySet();
     private volatile boolean stopped;
 
@@ -106,8 +105,9 @@ public class MarketDataClient {
         sessions.forEach(Session::close);
     }
 
-    public Optional<String> symbolFor(long instrumentId) {
-        return Optional.ofNullable(instrumentCache.get(instrumentId));
+    /** Latest Symbol Directory (0x52) received for {@code symbol}, across all sessions. */
+    public Optional<SymbolDirectory> symbolDirectory(String symbol) {
+        return Optional.ofNullable(symbols.get(symbol));
     }
 
     private MarketDataRequestResult execute(RequestType type, int requestId, int port, RequestSender sender)
@@ -342,11 +342,9 @@ public class MarketDataClient {
                     log.info("End of snapshot for request id {}", complete.requestId());
                     streamCompleted.complete(null);
                 }
-                case InstrumentDefinition definition -> instrumentCache.put(definition.instrumentId(), definition.symbol());
-                case AddOrder order -> log.debug("Add order {} [{}]", order,
-                        symbolFor(order.instrumentId()).orElse("UNKNOWN_" + order.instrumentId()));
+                case SymbolDirectory directory -> symbols.put(directory.symbol(), directory);
+                case AddOrder order -> log.debug("Add order {}", order);
                 case SystemEvent event -> log.info("System event '{}' -> {}", event.eventCode(), event.describe());
-                case HistoricalSymbol symbol -> log.debug("Historical symbol [{}]", symbol.symbol());
                 case Malformed malformed -> log.warn("Malformed message: {}", malformed);
                 default -> log.debug("RX {}", message);
             }

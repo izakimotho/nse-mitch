@@ -47,7 +47,8 @@ class MarketDataClientTest {
     @Test
     void replaySendsRequestParametersAndPublishesTaggedEvents() throws Exception {
         byte[] accepted = replayResponse('A');
-        byte[] data = data(instrumentDefinition(7, "SCOM"), historicalSymbol("KCB"), addOrder(123L, 7, 'B', 500, 152_500));
+        byte[] data = data(symbolDirectory(7, "SCOM", ' '), addOrder(123L, 'B', 500, "SCOM", 152_500),
+                symbolDirectory(8, "KCB", 'H'));
         byte[] complete = replayResponse('C');
         FakeMitchServer server = server(c -> {
             c.read();
@@ -61,7 +62,8 @@ class MarketDataClientTest {
 
         assertThat(result).isEqualTo(new MarketDataRequestResult(RequestType.REPLAY, 305, Status.COMPLETED, 3, null));
         assertThat(server.received).extracting(HEX::formatHex).containsExactly(LOGIN_HEX, REPLAY_HEX);
-        assertThat(client.symbolFor(7)).contains("SCOM");
+        assertThat(client.symbolDirectory("SCOM")).map(d -> d.isin()).contains("KE1000001402");
+        assertThat(client.symbolDirectory("KCB")).map(d -> d.symbolStatus()).contains('H');
         assertThat(events).filteredOn(MarketDataMessageEvent.class::isInstance)
                 .map(MarketDataMessageEvent.class::cast)
                 .filteredOn(e -> e.message() instanceof AddOrder)

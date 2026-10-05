@@ -19,6 +19,7 @@ public final class MitchDecoder {
 
     private static final Logger log = LoggerFactory.getLogger(MitchDecoder.class);
     private static final int PRICE_SCALE = 4;
+    private static final int LONG_PRICE_SCALE = 8;
 
     private final boolean innerLengthIncludesLengthField;
 
@@ -96,21 +97,45 @@ public final class MitchDecoder {
                     body.get() & 0xFF, (char) (body.get() & 0xFF), body.get() & 0xFF, body.getInt());
             case TIME -> new TimeHeartbeat(unsignedInt(body));
             case SYSTEM_EVENT -> new SystemEvent(unsignedInt(body), (char) (body.get() & 0xFF));
-            case INSTRUMENT_DEFINITION -> new InstrumentDefinition(unsignedInt(body), ascii(body, 16));
-            case SYMBOL_DIRECTORY -> new SymbolDirectory(unsignedInt(body), ascii(body, 12), (char) (body.get() & 0xFF));
-            case SYMBOL_DIRECTORY_HISTORICAL -> historicalSymbol(body);
-            case ADD_ORDER -> new AddOrder(body.getLong(), unsignedInt(body), (char) (body.get() & 0xFF),
-                    unsignedInt(body), BigDecimal.valueOf(body.getInt(), PRICE_SCALE));
-            case ORDER_EXECUTED -> new OrderExecuted(body.getLong(), unsignedInt(body), unsignedInt(body));
-            case SYSTEM_REGISTRY_TEXT -> new Text(type, "System Registry", ascii(body, body.remaining()));
-            case ASSET_DEFINITION_TEXT -> new Text(type, "Asset Definition", ascii(body, body.remaining()));
+            case SYMBOL_DIRECTORY -> new SymbolDirectory(unsignedInt(body), ascii(body, 12), character(body),
+                    ascii(body, 12), ascii(body, 6), ascii(body, 8), ascii(body, 6), price(body), character(body),
+                    ascii(body, 6), ascii(body, 8), price(body), unsignedByte(body), unsignedByte(body),
+                    ascii(body, 5), longPrice(body));
+            case ADD_ORDER -> new AddOrder(unsignedInt(body), body.getLong(), character(body), unsignedInt(body),
+                    ascii(body, 12), price(body), unsignedByte(body), unsignedByte(body), unsignedByte(body),
+                    price(body), unsignedByte(body));
+            case ORDER_EXECUTED -> new OrderExecuted(unsignedInt(body), body.getLong(), unsignedInt(body),
+                    body.getLong(), ascii(body, 6), ascii(body, 6), optionalLongPrice(body), optionalLongPrice(body),
+                    optionalLongPrice(body));
+            case CONSOLIDATED_STATISTICS -> new ConsolidatedStatistics(unsignedInt(body), unsignedByte(body),
+                    ascii(body, 12), unsignedInt(body), longPrice(body), unsignedInt(body), longPrice(body),
+                    longPrice(body), longPrice(body));
+            case AON_INFO -> new AonInfo(unsignedInt(body), ascii(body, 12), price(body), character(body),
+                    unsignedInt(body), character(body), ascii(body, 8));
+            case TOP_OF_BOOK -> new TopOfBook(unsignedInt(body), ascii(body, 12), unsignedByte(body),
+                    unsignedByte(body), character(body), price(body), unsignedInt(body), unsignedInt(body));
             default -> new Unknown(type, body.remaining());
         };
     }
 
-    private static HistoricalSymbol historicalSymbol(ByteBuffer body) {
-        body.getInt(); // alignment flags, not an instrument id
-        return new HistoricalSymbol(ascii(body, 12));
+    private static int unsignedByte(ByteBuffer buffer) {
+        return buffer.get() & 0xFF;
+    }
+
+    private static char character(ByteBuffer buffer) {
+        return (char) (buffer.get() & 0xFF);
+    }
+
+    private static BigDecimal price(ByteBuffer buffer) {
+        return BigDecimal.valueOf(buffer.getInt(), PRICE_SCALE);
+    }
+
+    private static BigDecimal longPrice(ByteBuffer buffer) {
+        return BigDecimal.valueOf(buffer.getLong(), LONG_PRICE_SCALE);
+    }
+
+    private static BigDecimal optionalLongPrice(ByteBuffer buffer) {
+        return buffer.remaining() >= Long.BYTES ? longPrice(buffer) : null;
     }
 
     /** The replay response channel id is the one big-endian field in an otherwise little-endian body. */
