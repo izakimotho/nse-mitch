@@ -105,11 +105,12 @@ class MarketDataClientTest {
         });
         client = client(properties(1, snapshotServer.port(), 1));
 
-        MarketDataRequestResult result = client.snapshot(new SnapshotRequestDto(5001, 7, (byte) 4, (byte) 1));
+        MarketDataRequestResult result = client.snapshot(new SnapshotRequestDto(5001, 0, null, "SCOM", 1, 0, null));
 
         assertThat(result.status()).isEqualTo(Status.COMPLETED);
         assertThat(result.type()).isEqualTo(RequestType.SNAPSHOT);
-        assertThat(HEX.formatHex(snapshotServer.received.get(1))).isEqualTo("16000101010000000e00818913000007000000040100");
+        assertThat(HEX.formatHex(snapshotServer.received.get(1))).isEqualTo("2f00010101000000" + "270081" + "00000000"
+                + "20".repeat(6) + "53434f4d" + "20".repeat(8) + "01" + "00" + "20".repeat(8) + "89130000");
     }
 
     @Test
@@ -209,7 +210,7 @@ class MarketDataClientTest {
 
         assertThatThrownBy(() -> client.replay(new ReplayRequestDto(null, (byte) 4, 9, 305)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessage("count is required");
-        assertThatThrownBy(() -> client.snapshot(new SnapshotRequestDto(null, 0, (byte) 4, (byte) 1)))
+        assertThatThrownBy(() -> client.snapshot(new SnapshotRequestDto(null, 0, null, null, 1, 0, null)))
                 .isInstanceOf(IllegalArgumentException.class).hasMessage("requestID is required");
     }
 

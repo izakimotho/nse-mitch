@@ -12,6 +12,9 @@ public final class MitchEncoder {
 
     static final int USERNAME_LENGTH = 6;
     static final int PASSWORD_LENGTH = 10;
+    static final int SEGMENT_LENGTH = 6;
+    static final int SYMBOL_LENGTH = 12;
+    static final int TIME_LENGTH = 8;
 
     private MitchEncoder() {
     }
@@ -32,14 +35,29 @@ public final class MitchEncoder {
         return buffer.array();
     }
 
-    public static byte[] snapshotRequest(int requestId, int instrumentId, byte marketDataGroup, byte snapshotType) {
-        ByteBuffer buffer = controlUnit(1, SNAPSHOT_REQUEST, 11);
+    /** Spec 7.7.3: 39-byte Snapshot Request. Blank (null) alpha fields are sent as spaces. */
+    public static byte[] snapshotRequest(int sequenceNumber, String segment, String symbol, int subBook,
+                                         int snapshotType, String recoverFromTime, int requestId) {
+        ByteBuffer buffer = controlUnit(1, SNAPSHOT_REQUEST, 4 + SEGMENT_LENGTH + SYMBOL_LENGTH + 1 + 1 + TIME_LENGTH + 4);
+        buffer.putInt(sequenceNumber);
+        buffer.put(fixedAscii(blankIfNull(segment), SEGMENT_LENGTH, "segment"));
+        buffer.put(fixedAscii(blankIfNull(symbol), SYMBOL_LENGTH, "symbol"));
+        buffer.put(unsignedByte(subBook, "subBook"));
+        buffer.put(unsignedByte(snapshotType, "snapshotType"));
+        buffer.put(fixedAscii(blankIfNull(recoverFromTime), TIME_LENGTH, "recoverFromTime"));
         buffer.putInt(requestId);
-        buffer.putInt(instrumentId);
-        buffer.put(marketDataGroup);
-        buffer.put(snapshotType);
-        buffer.put((byte) 0); // padding
         return buffer.array();
+    }
+
+    private static String blankIfNull(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static byte unsignedByte(int value, String field) {
+        if (value < 0 || value > 0xFF) {
+            throw new IllegalArgumentException(field + " must be between 0 and 255");
+        }
+        return (byte) value;
     }
 
     private static ByteBuffer controlUnit(int sequence, int messageType, int payloadLength) {

@@ -9,7 +9,11 @@ published, as raw bytes exactly as received, to the matching response topic with
 | Topic | Payload | Gateway port |
 |---|---|---|
 | `MARKET_REPLAY_REQUEST` | `{"count":4,"marketDataGroup":4,"startSequence":4,"requestID":305}` | `port` |
-| `SNAPSHOT_REQUEST` | `{"requestID":5001,"instrumentId":0,"marketDataGroup":4,"snapshotType":1}` | `snapshot-port` |
+| `SNAPSHOT_REQUEST` | `{"requestID":5001,"sequenceNumber":0,"segment":"","symbol":"SCOM","subBook":1,"snapshotType":0,"recoverFromTime":null}` | `snapshot-port` |
+
+Snapshot request fields follow spec 7.7.3 (0x81, 39 bytes): `segment` (6) and `symbol` (12) are space-padded and may be
+blank; `subBook` is the sub-book bit field; `snapshotType` 0 Order Book, 1 Symbol Status, 2 Instrument, 3 Trades,
+4 Book-Level Statistics, 5 News, 6 Top of Book; `recoverFromTime` is `HH:MM:SS`, used only for Trades and News.
 
 | Response topic | Key | Value | Header |
 |---|---|---|---|

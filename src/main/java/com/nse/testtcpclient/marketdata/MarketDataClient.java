@@ -85,13 +85,16 @@ public class MarketDataClient {
     /** Runs a snapshot on the snapshot port and blocks until it completes, goes idle or fails. */
     public MarketDataRequestResult snapshot(SnapshotRequestDto request) throws IOException, InterruptedException {
         int requestId = required(request.requestID(), "requestID");
-        int instrumentId = required(request.instrumentId(), "instrumentId");
-        byte snapshotType = required(request.snapshotType(), "snapshotType");
-        byte group = groupOrDefault(request.marketDataGroup());
+        int sequenceNumber = required(request.sequenceNumber(), "sequenceNumber");
+        int subBook = required(request.subBook(), "subBook");
+        int snapshotType = required(request.snapshotType(), "snapshotType");
+        byte[] packet = MitchEncoder.snapshotRequest(sequenceNumber, request.segment(), request.symbol(), subBook,
+                snapshotType, request.recoverFromTime(), requestId);
         return execute(RequestType.SNAPSHOT, requestId, properties.getSnapshotPort(), session -> {
-            log.info("Snapshot request {} | instrument: {}, group: {}, type: {}",
-                    requestId, instrumentId, group, snapshotType);
-            session.send(MitchEncoder.snapshotRequest(requestId, instrumentId, group, snapshotType), false);
+            log.info("Snapshot request {} | seq: {}, segment: [{}], symbol: [{}], sub book: {}, type: {}, from: [{}]",
+                    requestId, sequenceNumber, request.segment(), request.symbol(), subBook, snapshotType,
+                    request.recoverFromTime());
+            session.send(packet, false);
         });
     }
 

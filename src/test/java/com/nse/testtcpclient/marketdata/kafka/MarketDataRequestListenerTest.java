@@ -50,10 +50,11 @@ class MarketDataRequestListenerTest {
                     template.send("MARKET_REPLAY_REQUEST",
                             "{\"count\":4,\"marketDataGroup\":4,\"startSequence\":4,\"requestID\":305}");
                     template.send("SNAPSHOT_REQUEST",
-                            "{\"requestID\":5001,\"instrumentId\":0,\"marketDataGroup\":4,\"snapshotType\":1}");
+                            "{\"requestID\":5001,\"sequenceNumber\":0,\"segment\":\"\",\"symbol\":\"SCOM\","
+                                    + "\"subBook\":1,\"snapshotType\":0}");
 
                     verify(client, timeout(30_000)).replay(new ReplayRequestDto(4, (byte) 4, 4, 305));
-                    verify(client, timeout(30_000)).snapshot(new SnapshotRequestDto(5001, 0, (byte) 4, (byte) 1));
+                    verify(client, timeout(30_000)).snapshot(new SnapshotRequestDto(5001, 0, "", "SCOM", 1, 0, null));
                 });
     }
 
