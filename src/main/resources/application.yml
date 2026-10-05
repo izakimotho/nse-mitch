@@ -11,4 +11,6 @@ nse:
       completion-timeout: 10s    # give up waiting for the completion marker after this long without data
       replay-topic: MARKET_REPLAY_REQUEST
       snapshot-topic: SNAPSHOT_REQUEST
+      replay-response-topic: MARKET_REPLAY_RESPONSE   # raw frames, key = requestID
+      snapshot-response-topic: SNAPSHOT_RESPONSE
       kafka-group-id: nse-mitch-client

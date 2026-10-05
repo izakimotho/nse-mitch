@@ -46,8 +46,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Runs replay and snapshot requests against the MITCH gateway. Each request gets its own connection: connect, log in,
- * send the request, consume until the completion marker, disconnect. Decoded messages are published as
- * {@link MarketDataMessageEvent}s and the outcome as a {@link MarketDataRequestResult}.
+ * send the request, consume until the completion marker, disconnect. Raw frames received after the request are
+ * published as {@link MarketDataFrameEvent}s, decoded messages as {@link MarketDataMessageEvent}s and the outcome as a
+ * {@link MarketDataRequestResult}.
  */
 @Component
 public class MarketDataClient {
@@ -186,6 +187,7 @@ public class MarketDataClient {
         private final AtomicLong records = new AtomicLong();
         private volatile long lastActivityNanos = System.nanoTime();
         private volatile boolean closing;
+        private volatile boolean requestSent;
         private OutputStream out;
 
         Session(RequestType type, int requestId, int port) {
@@ -201,6 +203,7 @@ public class MarketDataClient {
         MarketDataRequestResult run(RequestSender sender) throws IOException, InterruptedException {
             connect();
             login();
+            requestSent = true;
             sender.send(this);
             Status status = awaitCompletion() ? Status.COMPLETED : Status.INCOMPLETE;
             return new MarketDataRequestResult(type, requestId, status, records.get(), null);
@@ -293,6 +296,9 @@ public class MarketDataClient {
                     lastActivityNanos = System.nanoTime();
                     if (log.isTraceEnabled()) {
                         log.trace("RX <- {}", HEX.formatHex(frame));
+                    }
+                    if (requestSent) {
+                        publish(new MarketDataFrameEvent(type, requestId, frame));
                     }
                     for (MitchMessage message : decoder.decode(frame)) {
                         handle(message);

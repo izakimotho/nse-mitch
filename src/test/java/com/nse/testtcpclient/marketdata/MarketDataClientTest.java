@@ -46,13 +46,14 @@ class MarketDataClientTest {
 
     @Test
     void replaySendsRequestParametersAndPublishesTaggedEvents() throws Exception {
+        byte[] accepted = replayResponse('A');
+        byte[] data = data(symbolDirectory(7, "SCOM"), historicalSymbol("KCB"), addOrder(123L, 7, 'B', 500, 152_500));
+        byte[] complete = replayResponse('C');
         FakeMitchServer server = server(c -> {
             c.read();
             c.write(loginResponse('A'));
             c.read();
-            c.write(replayResponse('A'),
-                    data(symbolDirectory(7, "SCOM"), historicalSymbol("KCB"), addOrder(123L, 7, 'B', 500, 152_500)),
-                    replayResponse('C'));
+            c.write(accepted, data, complete);
         });
         client = client(properties(server.port(), 1, 1));
 
@@ -70,6 +71,11 @@ class MarketDataClientTest {
                     assertThat(e.requestId()).isEqualTo(305);
                     assertThat(((AddOrder) e.message()).orderId()).isEqualTo(123L);
                 });
+        assertThat(events).filteredOn(MarketDataFrameEvent.class::isInstance)
+                .map(MarketDataFrameEvent.class::cast)
+                .allSatisfy(e -> assertThat(e.requestId()).isEqualTo(305))
+                .extracting(MarketDataFrameEvent::frame)
+                .containsExactly(accepted, data, complete);
         assertThat(events).contains(result);
         assertThat(server.errors).isEmpty();
     }

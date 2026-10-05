@@ -42,6 +42,8 @@ public class MitchProperties implements InitializingBean {
     private boolean innerLengthIncludesLengthField = false;
     private String replayTopic = "MARKET_REPLAY_REQUEST";
     private String snapshotTopic = "SNAPSHOT_REQUEST";
+    private String replayResponseTopic = "MARKET_REPLAY_RESPONSE";
+    private String snapshotResponseTopic = "SNAPSHOT_RESPONSE";
     private String kafkaGroupId = "nse-mitch-client";
 
     @Override

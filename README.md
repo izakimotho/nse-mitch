@@ -3,12 +3,18 @@
 Requires Java 21, Spring Boot 3, Spring Kafka.
 
 Replay and snapshot requests arrive as JSON on Kafka. Each request opens its own connection to the gateway, logs in,
-sends the request, consumes until the completion marker and disconnects.
+sends the request, consumes until the completion marker and disconnects. Every frame received after the request is
+published, as raw bytes exactly as received, to the matching response topic with the `requestID` as the key.
 
 | Topic | Payload | Gateway port |
 |---|---|---|
 | `MARKET_REPLAY_REQUEST` | `{"count":4,"marketDataGroup":4,"startSequence":4,"requestID":305}` | `port` |
 | `SNAPSHOT_REQUEST` | `{"requestID":5001,"instrumentId":0,"marketDataGroup":4,"snapshotType":1}` | `snapshot-port` |
+
+| Response topic | Key | Value | Header |
+|---|---|---|---|
+| `MARKET_REPLAY_RESPONSE` | `requestID` | one raw frame (`byte[]`) | `mitch-request-type=REPLAY` |
+| `SNAPSHOT_RESPONSE` | `requestID` | one raw frame (`byte[]`) | `mitch-request-type=SNAPSHOT` |
 
 Copy `src/main/java/com/nse/testtcpclient/**` into your project, delete the old `MarketDataClient`, `UnitHeader` and
 `ReplayRequestDto`, and add the `nse.mitch.replay` block from `src/main/resources/application.yml` (credentials via env vars).
@@ -18,6 +24,7 @@ Copy `src/main/java/com/nse/testtcpclient/**` into your project, delete the old 
 | Class | Role |
 |---|---|
 | `kafka/MarketDataRequestListener` | `@KafkaListener`s for both topics; one request at a time per topic |
+| `kafka/MarketDataResponsePublisher` | Raw frames -> response topics (own String/byte[] producer) |
 | `kafka/MarketDataKafkaConfiguration` | JSON -> DTO conversion (`StringJsonMessageConverter`) |
 | `request/ReplayRequestDto`, `request/SnapshotRequestDto` | Topic payloads |
 | `MarketDataClient` | `replay(dto)` / `snapshot(dto)`: connection, login, request, completion, retries, symbol cache |
